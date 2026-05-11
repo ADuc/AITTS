@@ -6,6 +6,7 @@ import threading
 import os
 import re
 import json
+import sys
 import urllib.error
 import urllib.request
 
@@ -15,8 +16,18 @@ import urllib.request
 all_voices = []
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/generate"
 DEFAULT_OLLAMA_MODEL = "gemma4"
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_OUTPUT_DIR = r"D:\audio\NOIDUNG"
+
+
+def get_app_dir():
+
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+APP_DIR = get_app_dir()
+DEFAULT_OUTPUT_DIR = r"D:\Video_DIY_GOC\AUDIO\NOIDUNG"
 DEFAULT_OUTPUT_FILENAME = "audio_001.mp3"
 DEFAULT_VOICE = "en-US-AriaNeural"
 DEFAULT_SPEED = 0
