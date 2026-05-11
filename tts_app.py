@@ -31,6 +31,28 @@ DEFAULT_OUTPUT_DIR = r"D:\Video_DIY_GOC\AUDIO\NOIDUNG"
 DEFAULT_OUTPUT_FILENAME = "audio_001.mp3"
 DEFAULT_VOICE = "en-US-AriaNeural"
 DEFAULT_SPEED = 0
+DEFAULT_INPUT_LANGUAGE = "Vietnamese"
+DEFAULT_OUTPUT_LANGUAGE = "English"
+TRANSLATION_LANGUAGES = [
+    ("Arabic", "ar"),
+    ("Chinese", "zh"),
+    ("Dutch", "nl"),
+    ("English", "en"),
+    ("French", "fr"),
+    ("German", "de"),
+    ("Hindi", "hi"),
+    ("Indonesian", "id"),
+    ("Italian", "it"),
+    ("Japanese", "ja"),
+    ("Korean", "ko"),
+    ("Portuguese", "pt"),
+    ("Russian", "ru"),
+    ("Spanish", "es"),
+    ("Thai", "th"),
+    ("Vietnamese", "vi")
+]
+LANGUAGE_NAMES = [language_name for language_name, _ in TRANSLATION_LANGUAGES]
+LANGUAGE_CODE_BY_NAME = dict(TRANSLATION_LANGUAGES)
 SETTINGS_FILE = os.path.join(APP_DIR, "tts_app_settings.json")
 INVALID_FILENAME_CHARS = '<>:"/\\|?*'
 app_settings = {}
@@ -50,12 +72,30 @@ def load_app_settings():
         return {}
 
 
+def get_language_code(language_name):
+
+    return LANGUAGE_CODE_BY_NAME.get(language_name, "")
+
+
+def select_combobox_value(combo, value, default_value):
+
+    values = list(combo["values"])
+
+    if value in values:
+        combo.set(value)
+        return
+
+    combo.set(default_value)
+
+
 def save_app_settings():
 
     settings = {
         "voice": get_selected_voice_name(),
         "speed": speed_slider.get(),
-        "output_dir": output_dir_entry.get().strip() or DEFAULT_OUTPUT_DIR
+        "output_dir": output_dir_entry.get().strip() or DEFAULT_OUTPUT_DIR,
+        "input_language": input_language_combo.get() or DEFAULT_INPUT_LANGUAGE,
+        "output_language": output_language_combo.get() or DEFAULT_OUTPUT_LANGUAGE
     }
 
     os.makedirs(APP_DIR, exist_ok=True)
@@ -183,7 +223,22 @@ def select_voice_by_name(voice_name):
 
 def apply_app_settings():
 
-    select_voice_by_name(app_settings.get("voice", DEFAULT_VOICE))
+    input_language = app_settings.get("input_language", DEFAULT_INPUT_LANGUAGE)
+    output_language = app_settings.get("output_language", DEFAULT_OUTPUT_LANGUAGE)
+
+    select_combobox_value(
+        input_language_combo,
+        input_language,
+        DEFAULT_INPUT_LANGUAGE
+    )
+    select_combobox_value(
+        output_language_combo,
+        output_language,
+        DEFAULT_OUTPUT_LANGUAGE
+    )
+
+    set_voice_filter_for_output_language()
+    update_language_labels()
 
     speed = app_settings.get("speed", DEFAULT_SPEED)
 
@@ -203,16 +258,18 @@ def apply_app_settings():
         filename_entry.delete(0, tk.END)
         filename_entry.insert(0, next_filename)
 
+    select_voice_by_name(app_settings.get("voice", DEFAULT_VOICE))
+
 # ====================================
 # OLLAMA TRANSLATION
 # ====================================
-def translate_to_english_with_ollama(text, model, api_url):
+def translate_text_with_ollama(text, input_language, output_language, model, api_url):
 
     prompt = (
-        "Translate the following Vietnamese text into natural spoken English. "
-        "Return only the English translation, with no notes, quotes, markdown, "
+        f"Translate the following {input_language} text into natural spoken {output_language}. "
+        f"Return only the {output_language} translation, with no notes, quotes, markdown, "
         "or explanation.\n\n"
-        f"Vietnamese text:\n{text}"
+        f"{input_language} text:\n{text}"
     )
 
     payload = {
@@ -342,16 +399,35 @@ def format_log_line(output_filename, text):
     return f"{output_filename}\t{clean_text}\n"
 
 
-def append_text_logs(output_dir, output_filename, vietnamese_text, english_text):
+def get_language_log_filename(language_name):
 
-    vietnam_path = os.path.join(output_dir, "vietnam.txt")
-    english_path = os.path.join(output_dir, "english.txt")
+    name = language_name.lower()
 
-    with open(vietnam_path, "a", encoding="utf-8") as vietnam_file:
-        vietnam_file.write(format_log_line(output_filename, vietnamese_text))
+    for char in INVALID_FILENAME_CHARS:
+        name = name.replace(char, "_")
 
-    with open(english_path, "a", encoding="utf-8") as english_file:
-        english_file.write(format_log_line(output_filename, english_text))
+    name = "_".join(name.split())
+
+    return f"{name}.txt"
+
+
+def append_text_logs(
+    output_dir,
+    output_filename,
+    input_language,
+    output_language,
+    input_text,
+    translated_text
+):
+
+    input_path = os.path.join(output_dir, get_language_log_filename(input_language))
+    output_path = os.path.join(output_dir, get_language_log_filename(output_language))
+
+    with open(input_path, "a", encoding="utf-8") as input_file:
+        input_file.write(format_log_line(output_filename, input_text))
+
+    with open(output_path, "a", encoding="utf-8") as output_file:
+        output_file.write(format_log_line(output_filename, translated_text))
 
 # ====================================
 # GENERATE TTS
@@ -371,12 +447,14 @@ async def generate_tts(text, voice, output_file, rate):
 # ====================================
 def run_tts():
 
-    vietnamese_text = text_input.get("1.0", tk.END).strip()
+    input_text = text_input.get("1.0", tk.END).strip()
+    input_language = input_language_combo.get() or DEFAULT_INPUT_LANGUAGE
+    output_language = output_language_combo.get() or DEFAULT_OUTPUT_LANGUAGE
 
-    if not vietnamese_text:
+    if not input_text:
         messagebox.showerror(
             "Error",
-            "Please enter Vietnamese text."
+            f"Please enter {input_language} text."
         )
         return
 
@@ -432,21 +510,26 @@ def run_tts():
 
     rate = f"{speed:+d}%"
 
-    set_busy(True, "Translating Vietnamese to English with Ollama...")
+    set_busy(
+        True,
+        f"Translating {input_language} to {output_language} with Ollama..."
+    )
 
     async def process():
 
         try:
 
-            english_text = translate_to_english_with_ollama(
-                vietnamese_text,
+            translated_text = translate_text_with_ollama(
+                input_text,
+                input_language,
+                output_language,
                 model,
                 api_url
             )
 
             root.after(
                 0,
-                lambda: set_output_text(english_text)
+                lambda: set_output_text(translated_text)
             )
 
             root.after(
@@ -455,7 +538,7 @@ def run_tts():
             )
 
             await generate_tts(
-                english_text,
+                translated_text,
                 voice,
                 output_file,
                 rate
@@ -464,8 +547,10 @@ def run_tts():
             append_text_logs(
                 output_dir,
                 output_filename,
-                vietnamese_text,
-                english_text
+                input_language,
+                output_language,
+                input_text,
+                translated_text
             )
 
             save_app_settings()
@@ -486,7 +571,7 @@ def run_tts():
                 0,
                 lambda: messagebox.showinfo(
                     "Success",
-                    "English MP3 generated successfully!"
+                    f"{output_language} MP3 generated successfully!"
                 )
             )
 
@@ -520,6 +605,37 @@ def set_output_text(text):
     english_output.delete("1.0", tk.END)
     english_output.insert(tk.END, text)
     english_output.config(state=tk.DISABLED)
+
+
+def set_voice_filter_for_output_language():
+
+    output_language = output_language_combo.get() or DEFAULT_OUTPUT_LANGUAGE
+    language_code = get_language_code(output_language)
+
+    if language_code:
+        language_combo.set(language_code)
+    else:
+        language_combo.set("All")
+
+    update_voice_list()
+
+
+def update_language_labels():
+
+    input_language = input_language_combo.get() or DEFAULT_INPUT_LANGUAGE
+    output_language = output_language_combo.get() or DEFAULT_OUTPUT_LANGUAGE
+
+    root.title(f"{input_language} to {output_language} Edge TTS")
+    title_label.config(text=f"{input_language} to {output_language} MP3 Generator")
+    input_text_label.config(text=f"{input_language} input:")
+    output_text_label.config(text=f"{output_language} output from Ollama:")
+    generate_btn.config(text=f"Generate {output_language} MP3")
+
+
+def on_translation_language_change(event=None):
+
+    set_voice_filter_for_output_language()
+    update_language_labels()
 
 
 def set_next_output_filename(current_filename):
@@ -620,6 +736,47 @@ ollama_url_entry.grid(row=0, column=3, padx=5, pady=8, sticky="we")
 ollama_frame.columnconfigure(3, weight=1)
 
 # ====================================
+# TRANSLATION LANGUAGE
+# ====================================
+translation_language_frame = tk.LabelFrame(root, text="Translation")
+
+translation_language_frame.pack(padx=10, pady=5, fill=tk.X)
+
+tk.Label(
+    translation_language_frame,
+    text="Input language:"
+).grid(row=0, column=0, padx=5, pady=8, sticky="w")
+
+input_language_combo = ttk.Combobox(
+    translation_language_frame,
+    width=20,
+    values=LANGUAGE_NAMES,
+    state="readonly"
+)
+
+input_language_combo.set(DEFAULT_INPUT_LANGUAGE)
+input_language_combo.grid(row=0, column=1, padx=5, pady=8, sticky="w")
+input_language_combo.bind("<<ComboboxSelected>>", on_translation_language_change)
+
+tk.Label(
+    translation_language_frame,
+    text="Output language:"
+).grid(row=0, column=2, padx=5, pady=8, sticky="w")
+
+output_language_combo = ttk.Combobox(
+    translation_language_frame,
+    width=20,
+    values=LANGUAGE_NAMES,
+    state="readonly"
+)
+
+output_language_combo.set(DEFAULT_OUTPUT_LANGUAGE)
+output_language_combo.grid(row=0, column=3, padx=5, pady=8, sticky="w")
+output_language_combo.bind("<<ComboboxSelected>>", on_translation_language_change)
+
+translation_language_frame.columnconfigure(4, weight=1)
+
+# ====================================
 # FILTER FRAME
 # ====================================
 filter_frame = tk.Frame(root)
@@ -629,7 +786,7 @@ filter_frame.pack(pady=10)
 # LANGUAGE
 tk.Label(
     filter_frame,
-    text="Language:"
+    text="Voice language:"
 ).grid(row=0, column=0, padx=5)
 
 language_combo = ttk.Combobox(
@@ -800,10 +957,12 @@ output_frame.columnconfigure(1, weight=1)
 # ====================================
 # TEXT INPUT
 # ====================================
-tk.Label(
+input_text_label = tk.Label(
     root,
     text="Vietnamese input:"
-).pack(anchor="w", padx=10)
+)
+
+input_text_label.pack(anchor="w", padx=10)
 
 text_input = tk.Text(
     root,
@@ -827,10 +986,12 @@ text_input.insert(
 # ====================================
 # ENGLISH OUTPUT
 # ====================================
-tk.Label(
+output_text_label = tk.Label(
     root,
     text="English output from Ollama:"
-).pack(anchor="w", padx=10)
+)
+
+output_text_label.pack(anchor="w", padx=10)
 
 english_output = tk.Text(
     root,

@@ -1,5 +1,7 @@
 {
-  "voice": "en-US-AnaNeural",
+  "voice": "en-US-AriaNeural",
   "speed": 0,
-  "output_dir": "D:/Video_DIY_GOC/AUDIO/NOIDUNG"
+  "output_dir": "D:/Video_DIY_GOC/AUDIO/NOIDUNG",
+  "input_language": "Vietnamese",
+  "output_language": "English"
 }
