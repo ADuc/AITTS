@@ -7,6 +7,7 @@ import os
 import re
 import json
 import sys
+import ctypes
 import urllib.error
 import urllib.request
 
@@ -81,6 +82,12 @@ DEFAULT_PROMPTS = {
 SETTINGS_FILE = os.path.join(APP_DIR, "tts_app_settings.json")
 INVALID_FILENAME_CHARS = '<>:"/\\|?*'
 app_settings = {}
+mp3_player_alias = "aitts_mp3_player"
+mp3_player_file = ""
+mp3_player_duration_ms = 0
+mp3_player_is_playing = False
+mp3_player_update_job = None
+updating_player_slider = False
 
 # ====================================
 # SETTINGS
@@ -481,6 +488,210 @@ async def generate_tts(text, voice, output_file, rate):
     await communicate.save(output_file)
 
 # ====================================
+# MP3 PLAYER
+# ====================================
+def format_duration(ms):
+
+    total_seconds = max(0, int(ms / 1000))
+    minutes = total_seconds // 60
+    seconds = total_seconds % 60
+
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def mci_send(command, return_result=False):
+
+    buffer = ctypes.create_unicode_buffer(255)
+    error_code = ctypes.windll.winmm.mciSendStringW(
+        command,
+        buffer,
+        254,
+        0
+    )
+
+    if error_code:
+        error_buffer = ctypes.create_unicode_buffer(255)
+        ctypes.windll.winmm.mciGetErrorStringW(error_code, error_buffer, 254)
+        raise RuntimeError(error_buffer.value or f"MCI error {error_code}")
+
+    if return_result:
+        return buffer.value.strip()
+
+    return ""
+
+
+def close_mp3_player():
+
+    global mp3_player_is_playing
+    global mp3_player_update_job
+
+    if mp3_player_update_job:
+        root.after_cancel(mp3_player_update_job)
+        mp3_player_update_job = None
+
+    try:
+        mci_send(f"stop {mp3_player_alias}")
+    except Exception:
+        pass
+
+    try:
+        mci_send(f"close {mp3_player_alias}")
+    except Exception:
+        pass
+
+    mp3_player_is_playing = False
+
+
+def get_mp3_player_position():
+
+    try:
+        position = mci_send(f"status {mp3_player_alias} position", True)
+        return int(position)
+    except (RuntimeError, ValueError):
+        return 0
+
+
+def update_mp3_player_ui(position_ms=None):
+
+    global updating_player_slider
+
+    if position_ms is None:
+        position_ms = get_mp3_player_position()
+
+    position_ms = max(0, min(position_ms, mp3_player_duration_ms))
+
+    updating_player_slider = True
+    mp3_progress_slider.set(position_ms)
+    updating_player_slider = False
+
+    mp3_time_label.config(
+        text=f"{format_duration(position_ms)} / {format_duration(mp3_player_duration_ms)}"
+    )
+
+
+def schedule_mp3_player_update():
+
+    global mp3_player_update_job
+    global mp3_player_is_playing
+
+    if not mp3_player_is_playing:
+        return
+
+    position_ms = get_mp3_player_position()
+    update_mp3_player_ui(position_ms)
+
+    if mp3_player_duration_ms and position_ms >= mp3_player_duration_ms - 250:
+        mp3_player_is_playing = False
+        play_mp3_btn.config(text="Play", state=tk.NORMAL)
+        update_mp3_player_ui(mp3_player_duration_ms)
+        return
+
+    mp3_player_update_job = root.after(250, schedule_mp3_player_update)
+
+
+def load_mp3_player(output_file):
+
+    global mp3_player_file
+    global mp3_player_duration_ms
+
+    close_mp3_player()
+
+    quoted_path = output_file.replace('"', "")
+    mci_send(f'open "{quoted_path}" type mpegvideo alias {mp3_player_alias}')
+    mci_send(f"set {mp3_player_alias} time format milliseconds")
+
+    duration = mci_send(f"status {mp3_player_alias} length", True)
+    mp3_player_duration_ms = int(duration)
+    mp3_player_file = output_file
+
+    mp3_name_label.config(text=os.path.basename(output_file))
+    mp3_progress_slider.config(
+        from_=0,
+        to=max(mp3_player_duration_ms, 1),
+        state=tk.NORMAL
+    )
+    update_mp3_player_ui(0)
+    play_mp3_btn.config(state=tk.NORMAL, text="Play")
+    stop_mp3_btn.config(state=tk.NORMAL)
+    player_frame.grid()
+
+
+def show_generated_mp3(output_file):
+
+    try:
+        load_mp3_player(output_file)
+    except Exception as e:
+        messagebox.showwarning(
+            "MP3 Player",
+            f"MP3 was created, but the player could not load it:\n{e}"
+        )
+
+
+def play_mp3():
+
+    global mp3_player_is_playing
+    global mp3_player_update_job
+
+    if not mp3_player_file:
+        return
+
+    try:
+        if mp3_player_update_job:
+            root.after_cancel(mp3_player_update_job)
+            mp3_player_update_job = None
+
+        position_ms = get_mp3_player_position()
+
+        if mp3_player_duration_ms and position_ms >= mp3_player_duration_ms - 250:
+            mci_send(f"seek {mp3_player_alias} to start")
+            update_mp3_player_ui(0)
+
+        mci_send(f"play {mp3_player_alias}")
+        mp3_player_is_playing = True
+        play_mp3_btn.config(text="Playing", state=tk.DISABLED)
+        schedule_mp3_player_update()
+    except Exception as e:
+        messagebox.showerror("MP3 Player", str(e))
+
+
+def stop_mp3():
+
+    global mp3_player_is_playing
+    global mp3_player_update_job
+
+    if not mp3_player_file:
+        return
+
+    try:
+        if mp3_player_update_job:
+            root.after_cancel(mp3_player_update_job)
+            mp3_player_update_job = None
+
+        mci_send(f"stop {mp3_player_alias}")
+        mci_send(f"seek {mp3_player_alias} to start")
+        mp3_player_is_playing = False
+        play_mp3_btn.config(text="Play", state=tk.NORMAL)
+        update_mp3_player_ui(0)
+    except Exception as e:
+        messagebox.showerror("MP3 Player", str(e))
+
+
+def seek_mp3(event=None):
+
+    if updating_player_slider or not mp3_player_file:
+        return
+
+    try:
+        position_ms = int(float(mp3_progress_slider.get()))
+        mci_send(f"seek {mp3_player_alias} to {position_ms}")
+        update_mp3_player_ui(position_ms)
+
+        if mp3_player_is_playing:
+            mci_send(f"play {mp3_player_alias}")
+    except Exception as e:
+        messagebox.showerror("MP3 Player", str(e))
+
+# ====================================
 # RUN TTS
 # ====================================
 def run_tts():
@@ -613,6 +824,11 @@ def run_tts():
                 lambda: status_label.config(
                     text=f"Saved: {output_file}"
                 )
+            )
+
+            root.after(
+                0,
+                lambda: show_generated_mp3(output_file)
             )
 
             root.after(
@@ -788,6 +1004,11 @@ def start_thread():
 
 
 def close_app():
+
+    try:
+        close_mp3_player()
+    except Exception:
+        pass
 
     try:
         save_app_settings()
@@ -1145,6 +1366,62 @@ filename_entry.insert(
 filename_entry.grid(row=1, column=1, padx=5, pady=8, sticky="w")
 
 output_frame.columnconfigure(1, weight=1)
+
+# MP3 PLAYER
+player_frame = tk.Frame(output_frame)
+
+player_frame.grid(row=2, column=0, columnspan=3, padx=5, pady=(2, 8), sticky="we")
+player_frame.columnconfigure(2, weight=1)
+
+mp3_name_label = tk.Label(
+    player_frame,
+    text="",
+    anchor="w"
+)
+
+mp3_name_label.grid(row=0, column=0, columnspan=4, padx=5, pady=(0, 5), sticky="we")
+
+play_mp3_btn = tk.Button(
+    player_frame,
+    text="Play",
+    width=10,
+    state=tk.DISABLED,
+    command=play_mp3
+)
+
+play_mp3_btn.grid(row=1, column=0, padx=5, sticky="w")
+
+stop_mp3_btn = tk.Button(
+    player_frame,
+    text="Stop",
+    width=10,
+    state=tk.DISABLED,
+    command=stop_mp3
+)
+
+stop_mp3_btn.grid(row=1, column=1, padx=5, sticky="w")
+
+mp3_progress_slider = tk.Scale(
+    player_frame,
+    from_=0,
+    to=1,
+    orient=tk.HORIZONTAL,
+    showvalue=False,
+    state=tk.DISABLED
+)
+
+mp3_progress_slider.grid(row=1, column=2, padx=5, sticky="we")
+mp3_progress_slider.bind("<ButtonRelease-1>", seek_mp3)
+
+mp3_time_label = tk.Label(
+    player_frame,
+    text="00:00 / 00:00",
+    width=14,
+    anchor="e"
+)
+
+mp3_time_label.grid(row=1, column=3, padx=5, sticky="e")
+player_frame.grid_remove()
 
 # ====================================
 # TEXT INPUT
