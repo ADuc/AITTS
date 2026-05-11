@@ -3,5 +3,8 @@
   "speed": 0,
   "output_dir": "D:/Video_DIY_GOC/AUDIO/NOIDUNG",
   "input_language": "Vietnamese",
-  "output_language": "English"
+  "output_language": "English",
+  "prompt_mode": "Expand idea to speech",
+  "voice_duration_seconds": 20,
+  "prompt_template": "Write a complete, natural spoken {output_language} voiceover script from the following {input_language} ideas. The script should take about {duration_seconds} seconds to read aloud at a normal speaking pace. Keep the meaning faithful to the ideas, make the speech coherent and polished, and return only the final {output_language} script with no notes, quotes, markdown, or explanation.\n\n{input_language} ideas:\n{input_text}"
 }

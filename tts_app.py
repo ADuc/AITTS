@@ -33,6 +33,14 @@ DEFAULT_VOICE = "en-US-AriaNeural"
 DEFAULT_SPEED = 0
 DEFAULT_INPUT_LANGUAGE = "Vietnamese"
 DEFAULT_OUTPUT_LANGUAGE = "English"
+PROMPT_MODE_TRANSLATE = "Translate exactly"
+PROMPT_MODE_EXPAND = "Expand idea to speech"
+PROMPT_MODES = [
+    PROMPT_MODE_TRANSLATE,
+    PROMPT_MODE_EXPAND
+]
+DEFAULT_PROMPT_MODE = PROMPT_MODE_TRANSLATE
+DEFAULT_VOICE_DURATION_SECONDS = 60
 TRANSLATION_LANGUAGES = [
     ("Arabic", "ar"),
     ("Chinese", "zh"),
@@ -53,6 +61,23 @@ TRANSLATION_LANGUAGES = [
 ]
 LANGUAGE_NAMES = [language_name for language_name, _ in TRANSLATION_LANGUAGES]
 LANGUAGE_CODE_BY_NAME = dict(TRANSLATION_LANGUAGES)
+DEFAULT_PROMPTS = {
+    PROMPT_MODE_TRANSLATE: (
+        "Translate the following {input_language} text into natural spoken {output_language}. "
+        "Return only the {output_language} translation, with no notes, quotes, markdown, "
+        "or explanation.\n\n"
+        "{input_language} text:\n{input_text}"
+    ),
+    PROMPT_MODE_EXPAND: (
+        "Write a complete, natural spoken {output_language} voiceover script from the "
+        "following {input_language} ideas. The script should take about "
+        "{duration_seconds} seconds to read aloud at a normal speaking pace. "
+        "Keep the meaning faithful to the ideas, make the speech coherent and polished, "
+        "and return only the final {output_language} script with no notes, quotes, "
+        "markdown, or explanation.\n\n"
+        "{input_language} ideas:\n{input_text}"
+    )
+}
 SETTINGS_FILE = os.path.join(APP_DIR, "tts_app_settings.json")
 INVALID_FILENAME_CHARS = '<>:"/\\|?*'
 app_settings = {}
@@ -95,7 +120,10 @@ def save_app_settings():
         "speed": speed_slider.get(),
         "output_dir": output_dir_entry.get().strip() or DEFAULT_OUTPUT_DIR,
         "input_language": input_language_combo.get() or DEFAULT_INPUT_LANGUAGE,
-        "output_language": output_language_combo.get() or DEFAULT_OUTPUT_LANGUAGE
+        "output_language": output_language_combo.get() or DEFAULT_OUTPUT_LANGUAGE,
+        "prompt_mode": prompt_mode_combo.get() or DEFAULT_PROMPT_MODE,
+        "voice_duration_seconds": get_voice_duration_seconds(),
+        "prompt_template": prompt_text.get("1.0", tk.END).strip()
     }
 
     os.makedirs(APP_DIR, exist_ok=True)
@@ -236,9 +264,27 @@ def apply_app_settings():
         output_language,
         DEFAULT_OUTPUT_LANGUAGE
     )
+    select_combobox_value(
+        prompt_mode_combo,
+        app_settings.get("prompt_mode", DEFAULT_PROMPT_MODE),
+        DEFAULT_PROMPT_MODE
+    )
+    duration = app_settings.get(
+        "voice_duration_seconds",
+        DEFAULT_VOICE_DURATION_SECONDS
+    )
+
+    set_voice_duration_seconds(duration)
+    set_prompt_text(
+        app_settings.get(
+            "prompt_template",
+            DEFAULT_PROMPTS[prompt_mode_combo.get()]
+        )
+    )
 
     set_voice_filter_for_output_language()
     update_language_labels()
+    update_prompt_mode_controls()
 
     speed = app_settings.get("speed", DEFAULT_SPEED)
 
@@ -261,17 +307,9 @@ def apply_app_settings():
     select_voice_by_name(app_settings.get("voice", DEFAULT_VOICE))
 
 # ====================================
-# OLLAMA TRANSLATION
+# OLLAMA TEXT GENERATION
 # ====================================
-def translate_text_with_ollama(text, input_language, output_language, model, api_url):
-
-    prompt = (
-        f"Translate the following {input_language} text into natural spoken {output_language}. "
-        f"Return only the {output_language} translation, with no notes, quotes, markdown, "
-        "or explanation.\n\n"
-        f"{input_language} text:\n{text}"
-    )
-
+def generate_text_with_ollama(prompt, model, api_url):
     payload = {
         "model": model,
         "prompt": prompt,
@@ -301,12 +339,12 @@ def translate_text_with_ollama(text, input_language, output_language, model, api
             "Cannot connect to Ollama. Make sure Ollama is running and the API URL is correct."
         ) from e
 
-    translated_text = response_data.get("response", "").strip()
+    generated_text = response_data.get("response", "").strip()
 
-    if not translated_text:
-        raise RuntimeError("Ollama returned an empty translation.")
+    if not generated_text:
+        raise RuntimeError("Ollama returned empty text.")
 
-    return translated_text
+    return generated_text
 
 # ====================================
 # OUTPUT FILE HELPERS
@@ -450,11 +488,21 @@ def run_tts():
     input_text = text_input.get("1.0", tk.END).strip()
     input_language = input_language_combo.get() or DEFAULT_INPUT_LANGUAGE
     output_language = output_language_combo.get() or DEFAULT_OUTPUT_LANGUAGE
+    prompt_mode = prompt_mode_combo.get() or DEFAULT_PROMPT_MODE
+    duration_seconds = get_voice_duration_seconds()
+    prompt_template = prompt_text.get("1.0", tk.END).strip()
 
     if not input_text:
         messagebox.showerror(
             "Error",
             f"Please enter {input_language} text."
+        )
+        return
+
+    if not prompt_template:
+        messagebox.showerror(
+            "Error",
+            "Please enter a prompt."
         )
         return
 
@@ -510,26 +558,31 @@ def run_tts():
 
     rate = f"{speed:+d}%"
 
-    set_busy(
-        True,
-        f"Translating {input_language} to {output_language} with Ollama..."
+    final_prompt = build_final_prompt(
+        prompt_template,
+        input_text,
+        input_language,
+        output_language,
+        duration_seconds
     )
+
+    action_text = "Expanding ideas" if prompt_mode == PROMPT_MODE_EXPAND else "Translating"
+
+    set_busy(True, f"{action_text} with Ollama...")
 
     async def process():
 
         try:
 
-            translated_text = translate_text_with_ollama(
-                input_text,
-                input_language,
-                output_language,
+            generated_text = generate_text_with_ollama(
+                final_prompt,
                 model,
                 api_url
             )
 
             root.after(
                 0,
-                lambda: set_output_text(translated_text)
+                lambda: set_output_text(generated_text)
             )
 
             root.after(
@@ -538,7 +591,7 @@ def run_tts():
             )
 
             await generate_tts(
-                translated_text,
+                generated_text,
                 voice,
                 output_file,
                 rate
@@ -550,7 +603,7 @@ def run_tts():
                 input_language,
                 output_language,
                 input_text,
-                translated_text
+                generated_text
             )
 
             save_app_settings()
@@ -600,6 +653,77 @@ def run_tts():
 # ====================================
 # UI HELPERS
 # ====================================
+def set_prompt_text(text):
+
+    prompt_text.delete("1.0", tk.END)
+    prompt_text.insert(tk.END, text)
+
+
+def get_voice_duration_seconds():
+
+    try:
+        duration = int(voice_duration_spinbox.get())
+    except ValueError:
+        duration = DEFAULT_VOICE_DURATION_SECONDS
+
+    return max(5, min(duration, 3600))
+
+
+def set_voice_duration_seconds(duration):
+
+    try:
+        duration = int(duration)
+    except (TypeError, ValueError):
+        duration = DEFAULT_VOICE_DURATION_SECONDS
+
+    current_state = voice_duration_spinbox.cget("state")
+    voice_duration_spinbox.config(state=tk.NORMAL)
+    voice_duration_spinbox.delete(0, tk.END)
+    voice_duration_spinbox.insert(0, str(max(5, min(duration, 3600))))
+    voice_duration_spinbox.config(state=current_state)
+
+
+def build_final_prompt(
+    template,
+    input_text,
+    input_language,
+    output_language,
+    duration_seconds
+):
+
+    replacements = {
+        "{input_language}": input_language,
+        "{output_language}": output_language,
+        "{duration_seconds}": str(duration_seconds),
+        "{input_text}": input_text
+    }
+
+    final_prompt = template
+
+    for placeholder, value in replacements.items():
+        final_prompt = final_prompt.replace(placeholder, value)
+
+    if "{input_text}" not in template:
+        final_prompt = f"{final_prompt.rstrip()}\n\n{input_language} text:\n{input_text}"
+
+    return final_prompt
+
+
+def update_prompt_mode_controls():
+
+    prompt_mode = prompt_mode_combo.get() or DEFAULT_PROMPT_MODE
+    duration_state = tk.NORMAL if prompt_mode == PROMPT_MODE_EXPAND else tk.DISABLED
+    voice_duration_spinbox.config(state=duration_state)
+
+
+def on_prompt_mode_change(event=None):
+
+    prompt_mode = prompt_mode_combo.get() or DEFAULT_PROMPT_MODE
+
+    set_prompt_text(DEFAULT_PROMPTS[prompt_mode])
+    update_prompt_mode_controls()
+
+
 def set_output_text(text):
     english_output.config(state=tk.NORMAL)
     english_output.delete("1.0", tk.END)
@@ -683,13 +807,22 @@ root.title("Vietnamese to English Edge TTS")
 
 root.protocol("WM_DELETE_WINDOW", close_app)
 
-root.geometry("1000x850")
+root.geometry("1000x950")
+
+notebook = ttk.Notebook(root)
+notebook.pack(fill=tk.BOTH, expand=True)
+
+main_tab = tk.Frame(notebook)
+settings_tab = tk.Frame(notebook)
+
+notebook.add(main_tab, text="Text & MP3")
+notebook.add(settings_tab, text="Settings")
 
 # ====================================
 # TITLE
 # ====================================
 title_label = tk.Label(
-    root,
+    main_tab,
     text="Vietnamese to English MP3 Generator",
     font=("Arial", 22, "bold")
 )
@@ -699,7 +832,7 @@ title_label.pack(pady=10)
 # ====================================
 # OLLAMA FRAME
 # ====================================
-ollama_frame = tk.LabelFrame(root, text="Ollama")
+ollama_frame = tk.LabelFrame(settings_tab, text="Ollama")
 
 ollama_frame.pack(padx=10, pady=5, fill=tk.X)
 
@@ -738,7 +871,7 @@ ollama_frame.columnconfigure(3, weight=1)
 # ====================================
 # TRANSLATION LANGUAGE
 # ====================================
-translation_language_frame = tk.LabelFrame(root, text="Translation")
+translation_language_frame = tk.LabelFrame(settings_tab, text="Translation")
 
 translation_language_frame.pack(padx=10, pady=5, fill=tk.X)
 
@@ -777,9 +910,68 @@ output_language_combo.bind("<<ComboboxSelected>>", on_translation_language_chang
 translation_language_frame.columnconfigure(4, weight=1)
 
 # ====================================
+# PROMPT
+# ====================================
+prompt_frame = tk.LabelFrame(settings_tab, text="AI Prompt")
+
+prompt_frame.pack(padx=10, pady=5, fill=tk.X)
+
+tk.Label(
+    prompt_frame,
+    text="Mode:"
+).grid(row=0, column=0, padx=5, pady=8, sticky="w")
+
+prompt_mode_combo = ttk.Combobox(
+    prompt_frame,
+    width=24,
+    values=PROMPT_MODES,
+    state="readonly"
+)
+
+prompt_mode_combo.set(DEFAULT_PROMPT_MODE)
+prompt_mode_combo.grid(row=0, column=1, padx=5, pady=8, sticky="w")
+prompt_mode_combo.bind("<<ComboboxSelected>>", on_prompt_mode_change)
+
+tk.Label(
+    prompt_frame,
+    text="Voice duration:"
+).grid(row=0, column=2, padx=5, pady=8, sticky="w")
+
+voice_duration_spinbox = tk.Spinbox(
+    prompt_frame,
+    from_=5,
+    to=3600,
+    increment=5,
+    width=8
+)
+
+voice_duration_spinbox.delete(0, tk.END)
+voice_duration_spinbox.insert(0, str(DEFAULT_VOICE_DURATION_SECONDS))
+voice_duration_spinbox.grid(row=0, column=3, padx=5, pady=8, sticky="w")
+
+tk.Label(
+    prompt_frame,
+    text="seconds"
+).grid(row=0, column=4, padx=5, pady=8, sticky="w")
+
+prompt_text = tk.Text(
+    prompt_frame,
+    wrap=tk.WORD,
+    font=("Arial", 10),
+    height=6
+)
+
+prompt_text.insert(tk.END, DEFAULT_PROMPTS[DEFAULT_PROMPT_MODE])
+prompt_text.grid(row=1, column=0, columnspan=5, padx=5, pady=(0, 8), sticky="we")
+
+prompt_frame.columnconfigure(1, weight=1)
+prompt_frame.columnconfigure(4, weight=1)
+update_prompt_mode_controls()
+
+# ====================================
 # FILTER FRAME
 # ====================================
-filter_frame = tk.Frame(root)
+filter_frame = tk.Frame(settings_tab)
 
 filter_frame.pack(pady=10)
 
@@ -840,7 +1032,7 @@ gender_combo.bind(
 # ====================================
 # SEARCH
 # ====================================
-search_frame = tk.Frame(root)
+search_frame = tk.Frame(settings_tab)
 
 search_frame.pack(pady=5)
 
@@ -864,7 +1056,7 @@ search_entry.bind(
 # ====================================
 # VOICE SELECT
 # ====================================
-voice_frame = tk.Frame(root)
+voice_frame = tk.Frame(settings_tab)
 
 voice_frame.pack(pady=10)
 
@@ -883,7 +1075,7 @@ voice_combo.pack(side=tk.LEFT)
 # ====================================
 # SPEED
 # ====================================
-speed_frame = tk.Frame(root)
+speed_frame = tk.Frame(settings_tab)
 
 speed_frame.pack(pady=10)
 
@@ -907,7 +1099,7 @@ speed_slider.pack(side=tk.LEFT)
 # ====================================
 # OUTPUT FILE
 # ====================================
-output_frame = tk.LabelFrame(root, text="Output MP3")
+output_frame = tk.LabelFrame(settings_tab, text="Output MP3")
 
 output_frame.pack(padx=10, pady=5, fill=tk.X)
 
@@ -958,14 +1150,14 @@ output_frame.columnconfigure(1, weight=1)
 # TEXT INPUT
 # ====================================
 input_text_label = tk.Label(
-    root,
+    main_tab,
     text="Vietnamese input:"
 )
 
 input_text_label.pack(anchor="w", padx=10)
 
 text_input = tk.Text(
-    root,
+    main_tab,
     wrap=tk.WORD,
     font=("Arial", 12),
     height=8
@@ -987,14 +1179,14 @@ text_input.insert(
 # ENGLISH OUTPUT
 # ====================================
 output_text_label = tk.Label(
-    root,
+    main_tab,
     text="English output from Ollama:"
 )
 
 output_text_label.pack(anchor="w", padx=10)
 
 english_output = tk.Text(
-    root,
+    main_tab,
     wrap=tk.WORD,
     font=("Arial", 12),
     height=6,
@@ -1012,7 +1204,7 @@ english_output.pack(
 # BUTTON
 # ====================================
 generate_btn = tk.Button(
-    root,
+    main_tab,
     text="Generate English MP3",
     font=("Arial", 16),
     bg="#4CAF50",
@@ -1028,7 +1220,7 @@ generate_btn.pack(pady=10)
 # STATUS
 # ====================================
 status_label = tk.Label(
-    root,
+    main_tab,
     text="Loading voices...",
     fg="blue",
     font=("Arial", 11)
