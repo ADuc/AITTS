@@ -1099,7 +1099,7 @@ speed_slider.pack(side=tk.LEFT)
 # ====================================
 # OUTPUT FILE
 # ====================================
-output_frame = tk.LabelFrame(settings_tab, text="Output MP3")
+output_frame = tk.LabelFrame(main_tab, text="Output MP3")
 
 output_frame.pack(padx=10, pady=5, fill=tk.X)
 
